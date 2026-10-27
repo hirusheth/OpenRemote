@@ -268,6 +268,17 @@ async def cmd_volume(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_fake_tv(args: argparse.Namespace) -> int:
+    from rich.console import Console
+
+    from .faketv import run_fake_tv
+
+    console = Console()
+    console.print("[bold]Starting the Fake TV emulator...[/bold]")
+    await run_fake_tv(name=args.name, port=args.port, advertise=not args.no_mdns)
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # wizard
 # ---------------------------------------------------------------------------
@@ -548,6 +559,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-voice", action="store_true", help="disable microphone streaming"
     )
     p_wizard.set_defaults(func=cmd_wizard)
+
+    p_fake = sub.add_parser(
+        "fake-tv",
+        help="run a barebones Android TV emulator for testing",
+        description="Emulates the remote-control parts of an Android TV: TLS "
+                    "service on the remote port, mDNS advertisement, PIN "
+                    "pairing (the PIN is printed here), key/text/voice "
+                    "logging. Run it in a second terminal and point "
+                    "OpenRemote at it to test end to end without a TV.",
+    )
+    p_fake.add_argument("--port", type=int, default=6467, help="listen port")
+    p_fake.add_argument(
+        "--name", default="Fake TV", help="device name (shown in discovery)"
+    )
+    p_fake.add_argument(
+        "--no-mdns", action="store_true", help="do not advertise via mDNS"
+    )
+    p_fake.set_defaults(func=cmd_fake_tv)
     return parser
 
 

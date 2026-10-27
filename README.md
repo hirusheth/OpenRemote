@@ -33,6 +33,26 @@ reverse-engineering the Google Home APK (4.34.22.2) with
   hand-rolled and byte-exact (no protoc/gencode); only discovery, TLS certs
   and audio use libraries.
 
+## Test without a TV (fake TV emulator)
+
+OpenRemote ships a barebones Android TV emulator so you can test the whole
+flow on one PC with no real TV and no firewall configuration:
+
+```powershell
+# Terminal 1 — the fake TV (prints a pairing PIN when asked):
+openremote fake-tv --name "Fake Living Room"
+
+# Terminal 2 — OpenRemote:
+openremote wizard        # scan -> pick "Fake Living Room" -> type the PIN
+# or: openremote discover / pair --host 127.0.0.1 / remote --host 127.0.0.1
+```
+
+The emulator advertises itself over mDNS, runs the POLO pairing handshake
+(generating a valid 6-digit PIN and verifying your client's secret), then logs
+every key press, text input, app link and voice session it receives — like a
+TV screen would show them. The remote session speaks to `127.0.0.1`, which
+Windows Firewall never blocks.
+
 ## Install
 
 Requires Python 3.11+.

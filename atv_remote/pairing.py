@@ -63,6 +63,89 @@ def encode_pairing_request(client_name: str) -> bytes:
     return _outer(wire.message_field(F_PAIRING_REQUEST, inner))
 
 
+def encode_pairing_request_ack(server_name: str) -> bytes:
+    """TV -> client: acknowledge the pairing request (POLO)."""
+    return _outer(
+        wire.message_field(F_PAIRING_REQUEST_ACK, wire.bytes_field(1, server_name.encode()))
+    )
+
+
+def encode_configuration_ack() -> bytes:
+    """TV -> client: configuration accepted (POLO)."""
+    return _outer(wire.message_field(F_CONFIGURATION_ACK, b""))
+
+
+def encode_secret_ack() -> bytes:
+    """TV -> client: secret verified, client certificate trusted (POLO)."""
+    return _outer(wire.message_field(F_SECRET_ACK, wire.bytes_field(1, b"")))
+
+
+def encode_outer(fields: bytes, status: int = STATUS_OK) -> bytes:
+    """Build an OuterMessage with an explicit status (e.g. an error)."""
+    return _outer(fields, status)
+
+
+def is_pairing_message(payload: bytes) -> bool:
+    """Distinguish POLO OuterMessages from RemoteMessages on the wire.
+
+    An OuterMessage starts with ``protocol_version`` (varint field 1), while a
+    RemoteMessage starts with a length-delimited oneof member."""
+    try:
+        key, _offset = wire.decode_varint(payload, 0)
+    except ValueError:
+        return False
+    return (key & 7) == 0 and (key >> 3) == F_PROTOCOL_VERSION
+
+
+def server_pairing_secret(
+    client_cert_der: bytes, server_cert_pem: bytes, pin: str
+) -> bytes:
+    """The TV-side view of the pairing secret.
+
+    Same construction as :func:`pairing_secret` but taking the client
+    certificate as DER (as read from the TLS session) - used by emulators to
+    verify the secret a client sent."""
+    from cryptography import x509
+
+    numbers = x509.load_der_x509_certificate(client_cert_der).public_key().public_numbers()
+    client_mod, client_exp = numbers.n, numbers.e
+    server_mod, server_exp = public_numbers(server_cert_pem)
+    digest = hashlib.sha256()
+    digest.update(bytes.fromhex(f"{client_mod:X}"))
+    digest.update(bytes.fromhex(f"0{client_exp:X}"))
+    digest.update(bytes.fromhex(f"{server_mod:X}"))
+    digest.update(bytes.fromhex(f"0{server_exp:X}"))
+    digest.update(bytes.fromhex(pin[2:]))
+    return digest.digest()
+
+
+def make_pairing_pin(client_cert_der: bytes, server_cert_pem: bytes) -> str:
+    """Pick a valid 6-hex-digit PIN the way the TV does.
+
+    The first two digits are check digits: they must equal the first byte of
+    the secret hash over the remaining four digits, so the TV derives them
+    from a random 2-byte suffix."""
+    import os as _os
+
+    suffix = _os.urandom(2)
+    check = _check_digit(client_cert_der, server_cert_pem, suffix)
+    return f"{check:02x}{suffix.hex()}"
+
+
+def _check_digit(client_cert_der: bytes, server_cert_pem: bytes, suffix: bytes) -> int:
+    from cryptography import x509
+
+    numbers = x509.load_der_x509_certificate(client_cert_der).public_key().public_numbers()
+    server_mod, server_exp = public_numbers(server_cert_pem)
+    digest = hashlib.sha256()
+    digest.update(bytes.fromhex(f"{numbers.n:X}"))
+    digest.update(bytes.fromhex(f"0{numbers.e:X}"))
+    digest.update(bytes.fromhex(f"{server_mod:X}"))
+    digest.update(bytes.fromhex(f"0{server_exp:X}"))
+    digest.update(suffix)
+    return digest.digest()[0]
+
+
 def encode_options() -> bytes:
     # Options{input_encodings[0]{type: HEX(3), symbol_length: 6}, preferred_role: INPUT(1)}
     encoding = wire.varint_field(1, 3) + wire.varint_field(2, 6)
