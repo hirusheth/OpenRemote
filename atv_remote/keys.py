@@ -68,3 +68,31 @@ BUTTONS = {
     "next": KeyCode.MEDIA_NEXT,
     "previous": KeyCode.MEDIA_PREVIOUS,
 }
+
+
+def parse_keycode(value: str) -> int:
+    """Turn a key name into an Android keycode (for the CLI/automation).
+
+    Accepted forms (evidence: the wire carries raw AOSP KeyEvent codes):
+      "26" / "0x1a"        raw keycode
+      "dpad_center"        BUTTONS alias
+      "home" / "power"     BUTTONS alias
+      "KEYCODE_HOME"       AOSP KeyEvent member name (case-insensitive)
+    """
+    text = value.strip()
+    if not text:
+        raise ValueError("empty key name")
+    try:
+        return int(text, 0)  # handles decimal and 0x hex
+    except ValueError:
+        pass
+    lowered = text.lower()
+    if lowered in BUTTONS:
+        return int(BUTTONS[lowered])
+    name = text.upper().removeprefix("KEYCODE_")
+    if name in KeyCode.__members__:
+        return int(KeyCode[name])
+    raise ValueError(
+        f"unknown key {value!r}. Try e.g. dpad_center, home, power, volume_up, "
+        "KEYCODE_SEARCH, or a raw number (0-285)."
+    )

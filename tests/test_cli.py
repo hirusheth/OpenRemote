@@ -8,15 +8,14 @@ import pytest
 from atv_remote import __main__ as cli
 
 
-def test_bare_invocation_prints_guide() -> None:
-    """Running with no arguments must print the getting-started guide."""
-    buffer = io.StringIO()
-    with redirect_stdout(buffer):
-        code = cli.main([])
-    out = buffer.getvalue()
+def test_bare_invocation_is_menu_aware(capsys, monkeypatch) -> None:
+    """Bare invocation enters the menu; without a TTY it explains automation."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    code = cli.main([])
+    out = capsys.readouterr().out
     assert code == 0
-    for token in ("discover", "pair", "remote", "wizard", "--help", "<tv-ip>"):
-        assert token in out, f"guide is missing '{token}'"
+    for token in ("discover", "pair", "remote", "wizard", "--help"):
+        assert token in out, f"non-tty bare output is missing '{token}'"
 
 
 def test_version_flag(capsys) -> None:

@@ -1,12 +1,16 @@
 """OpenRemote — standalone Google TV / Android TV remote control.
 
-Commands:
+Bare `openremote` opens the interactive menu (sticky: pick actions with
+numbers/arrow keys, return to the menu after each action). All commands
+remain available for scripting/automation:
+
   discover   find TVs on your network (mDNS)
   pair       pair with a TV using the PIN shown on its screen
   remote     start the interactive remote control
-  wizard     do all of the above interactively (recommended first run)
-
-Running `openremote` with no arguments prints a getting-started guide.
+  wizard     guided first run: discover -> pair -> remote
+  key        send a single button press (automation)
+  text       type text into the TV (automation)
+  volume     volume up/down/mute/status (automation)
 """
 
 from __future__ import annotations
@@ -24,33 +28,36 @@ from .certs import ensure_client_cert
 
 DOCS_URL = "https://github.com/cyberbuddhy/OpenRemote"
 
+DEFAULT_CERT = "~/.config/openremote/client.pem"
+DEFAULT_KEY = "~/.config/openremote/key.pem"
+
 GUIDE = f"""\
 OpenRemote {__version__} — standalone Google TV / Android TV remote control
 Speaks the Android TV Remote v2 protocol (reverse-engineered from the Google
 Home app — see EVIDENCE.md).
 
-Commands:
-  discover   Find TVs on your network (mDNS)
-  pair       Pair with a TV using the 6-digit PIN shown on its screen
-  remote     Start the interactive remote (D-pad, volume, text, voice)
-  wizard     Do everything interactively — recommended on first run
+Run `openremote` with no arguments for the interactive menu (pick actions
+with numbers/arrow keys; you stay inside the app until you quit).
 
-Typical first run:
-  openremote wizard
-  (or step by step:)
-  openremote discover                # 1. find your TV's IP
-  openremote pair --host <tv-ip>     # 2. type the PIN shown on the TV once
-  openremote remote --host <tv-ip>   # 3. control it
+Command line (scripts / automation):
+  openremote discover                     find TVs (mDNS)
+  openremote pair --host <tv-ip>          pair once (type the TV's PIN)
+  openremote remote --host <tv-ip>        interactive remote
+  openremote wizard                       guided first run
+  openremote key --host <ip> power        one button press
+  openremote key --host <ip> dpad_down --direction long
+  openremote text --host <ip> "hello"     type into the TV
+  openremote volume --host <ip> up        volume up/down/mute/status
 
 Help:
-  openremote --help                  full usage and examples
-  openremote <command> --help        options for one command
-  {DOCS_URL}          README + EVIDENCE.md (how it works)
+  openremote --help                       full usage and examples
+  openremote <command> --help             options for one command
+  {DOCS_URL}               README + EVIDENCE.md (how it works)
 
 Notes:
   - If the `openremote` command is not found, run it as:
-      python -m atv_remote wizard
-  - Pairing is stored in ~/.config/openremote/ (client.pem/key.pem);
+      python -m atv_remote
+  - Pairing lives in ~/.config/openremote/ (client.pem/key.pem);
     copy that folder to use the same pairing on another PC.
 """
 
@@ -63,18 +70,17 @@ def _config_from(args: argparse.Namespace) -> RemoteConfig:
     return RemoteConfig(
         host=args.host or "",
         port=args.port,
-        client_name=args.name,
-        cert_path=args.cert or "~/.config/openremote/client.pem",
-        key_path=args.key or "~/.config/openremote/key.pem",
+        client_name=getattr(args, "name", "OpenRemote"),
+        cert_path=args.cert or DEFAULT_CERT,
+        key_path=args.key or DEFAULT_KEY,
     )
 
 
-def _require_host(args: argparse.Namespace, parser: argparse.ArgumentParser) -> str | None:
+def _require_host(args: argparse.Namespace) -> str | None:
     if not args.host:
-        print("No --host given. Find your TV first:\n"
-              "  openremote discover\n"
-              "or let the wizard do everything:\n"
-              "  openremote wizard")
+        print("No --host given. Find your TV first:")
+        print("  openremote discover")
+        print("or use the interactive menu:  openremote")
         return None
     return args.host
 
@@ -85,23 +91,34 @@ def _require_host(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
 
 
 async def cmd_discover(args: argparse.Namespace) -> int:
-    print(f"Searching for _androidtvremote2._tcp ({args.timeout}s)...")
-    devices = await discover(timeout=args.timeout)
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
+    with console.status("[cyan]Scanning for TVs on this network...[/cyan]"):
+        devices = await discover(timeout=args.timeout)
     if not devices:
-        print("No TVs found. Checklist:")
-        print("  - Is the TV powered on (not off) and connected to this network?")
-        print("  - On the TV: Settings > Apps > See all apps > Show system apps >")
-        print("    'Android TV Remote Service' — must be enabled (or present).")
-        print("  - Some TVs also need Settings > Network > Remote control enabled.")
-        print("  - Check that your firewall allows Python/UDP 5353 (mDNS).")
-        print("\nOr run the guided flow:  openremote wizard")
+        console.print("[red]No TVs found.[/red] Checklist:")
+        console.print("  - TV powered on and on the same network (no VPN on this PC)")
+        console.print("  - TV: Settings > Apps > Show system apps > "
+                      "[italic]Android TV Remote Service[/italic] enabled")
+        console.print("  - allow Python through the firewall (UDP 5353 mDNS)")
+        console.print("\nGuided flow: [bold]openremote wizard[/bold]  |  "
+                      "interactive menu: [bold]openremote[/bold]")
         return 1
-    for index, device in enumerate(devices, start=1):
-        standby = "" if device.standby is None else f"  standby={device.standby}"
-        print(f"  [{index}] {device.name:40s} {device.host}:{device.port}{standby}")
-    print("\nNext steps:")
-    print(f"  openremote pair --host {devices[0].host}   (once)")
-    print(f"  openremote remote --host {devices[0].host}  (after pairing)")
+    table = Table(title="TVs found", header_style="cyan")
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Name")
+    table.add_column("Address", style="green")
+    table.add_column("Standby", style="dim")
+    for index, device in enumerate(sorted(devices, key=lambda d: d.name), start=1):
+        standby = "?" if device.standby is None else str(device.standby)
+        table.add_row(str(index), device.name, f"{device.host}:{device.port}", standby)
+    console.print(table)
+    first = sorted(devices, key=lambda d: d.name)[0]
+    console.print("\nNext steps:")
+    console.print(f"  [bold]openremote pair --host {first.host}[/bold]   (once)")
+    console.print(f"  [bold]openremote remote --host {first.host}[/bold]  (after pairing)")
     return 0
 
 
@@ -111,34 +128,38 @@ async def cmd_discover(args: argparse.Namespace) -> int:
 
 
 async def cmd_pair(args: argparse.Namespace) -> int:
-    if _require_host(args, None) is None:
+    if _require_host(args) is None:
         return 2
+    from rich.console import Console
+
+    console = Console()
     config = _config_from(args)
     cert_path, key_path = ensure_client_cert(
         pathlib.Path(config.cert_path).expanduser(),
         pathlib.Path(config.key_path).expanduser(),
     )
     ctx = make_ssl_context(str(cert_path), str(key_path))
-    print(f"Connecting to {config.host}:{config.port} ...")
+    console.print(f"Connecting to [green]{config.host}:{config.port}[/green] ...")
     reader, writer = await asyncio.open_connection(config.host, config.port, ssl=ctx)
     pairing = PairingClient(reader, writer, config.client_name, cert_path.read_bytes())
-    print("Starting pairing; a 6-digit PIN should now appear on the TV...")
+    console.print("Starting pairing — a [bold cyan]6-digit PIN[/bold cyan] should "
+                  "now appear on the TV...")
     await pairing.start()
     pin = input("Enter the PIN shown on the TV: ").strip()
     try:
         await pairing.finish(pin)
     except ValueError as exc:
-        print(f"Pairing failed: {exc}", file=sys.stderr)
-        print("The PIN may have been mistyped or expired — just try again.",
-              file=sys.stderr)
+        console.print(f"[red]Pairing failed:[/red] {exc}")
+        console.print("[dim]The PIN may have been mistyped or expired — try again.[/dim]")
         return 1
     writer.close()
     try:
         await writer.wait_closed()
     except (ConnectionError, OSError):
         pass
-    print(f"Paired. Client certificate saved to {cert_path}")
-    print(f"Now start the remote:  openremote remote --host {config.host}")
+    console.print(f"[green]Paired![/green] Client certificate saved to {cert_path}")
+    console.print(f"Now start the remote:  [bold]openremote remote --host "
+                  f"{config.host}[/bold]")
     return 0
 
 
@@ -170,9 +191,59 @@ async def _run_remote_session(config: RemoteConfig, no_voice: bool) -> int:
 
 
 async def cmd_remote(args: argparse.Namespace) -> int:
-    if _require_host(args, None) is None:
+    if _require_host(args) is None:
         return 2
     return await _run_remote_session(_config_from(args), args.no_voice)
+
+
+# ---------------------------------------------------------------------------
+# one-shot automation commands: key / text / volume
+# ---------------------------------------------------------------------------
+
+
+def _device_from(args: argparse.Namespace) -> TVDevice | None:
+    if _require_host(args) is None:
+        return None
+    return TVDevice(name=getattr(args, "name", "") or "", host=args.host,
+                    port=args.port)
+
+
+async def cmd_key(args: argparse.Namespace) -> int:
+    from .keys import parse_keycode
+    from .menu import key_flow
+
+    device = _device_from(args)
+    if device is None:
+        return 2
+    try:
+        code = parse_keycode(args.key)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    await key_flow(device, args.key, direction=args.direction, hold=args.hold)
+    print(f"keycode {code} sent.")
+    return 0
+
+
+async def cmd_text(args: argparse.Namespace) -> int:
+    from .menu import text_flow
+
+    device = _device_from(args)
+    if device is None:
+        return 2
+    message = " ".join(args.text)
+    await text_flow(device, message)
+    return 0
+
+
+async def cmd_volume(args: argparse.Namespace) -> int:
+    from .menu import volume_flow
+
+    device = _device_from(args)
+    if device is None:
+        return 2
+    await volume_flow(device, args.action, steps=args.steps)
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +293,7 @@ async def _pair_interactive(config: RemoteConfig, reason: str) -> bool:
 
 
 async def cmd_wizard(args: argparse.Namespace) -> int:
-    print(f"OpenRemote wizard — let's find and connect to your TV.\n")
+    print("OpenRemote wizard — let's find and connect to your TV.\n")
     print(f"Searching for TVs ({args.timeout}s)...")
     devices = await discover(timeout=args.timeout)
     if not devices:
@@ -238,8 +309,8 @@ async def cmd_wizard(args: argparse.Namespace) -> int:
         host=device.host,
         port=device.port,
         client_name=args.name,
-        cert_path=args.cert or "~/.config/openremote/client.pem",
-        key_path=args.key or "~/.config/openremote/key.pem",
+        cert_path=args.cert or DEFAULT_CERT,
+        key_path=args.key or DEFAULT_KEY,
     )
     ensure_client_cert(
         pathlib.Path(config.cert_path).expanduser(),
@@ -247,7 +318,6 @@ async def cmd_wizard(args: argparse.Namespace) -> int:
     )
 
     # Try to connect; pair interactively if the TV doesn't know us yet.
-    paired_already = False
     for attempt in range(2):
         client = ATVRemoteClient(config)
         try:
@@ -266,7 +336,6 @@ async def cmd_wizard(args: argparse.Namespace) -> int:
                   f"{config.host}  (or clear the storage of 'Android TV Remote")
             print("Service' on the TV and re-run the wizard).")
             return 1
-        paired_already = True
         # Connected: run the remote UI.
         from .ui import run_ui
 
@@ -295,19 +364,25 @@ async def cmd_wizard(args: argparse.Namespace) -> int:
 
 EPILOG = """\
 examples:
-  openremote                       print the getting-started guide
-  openremote wizard                guided: discover -> pair -> remote
+  openremote                       interactive menu (pick with numbers/arrows)
+  openremote wizard                guided first run: discover -> pair -> remote
   openremote discover              list TVs on this network
   openremote pair --host 192.168.1.42
                                    pair using the PIN shown on the TV
   openremote remote --host 192.168.1.42
                                    start the interactive remote
-  openremote remote --host 192.168.1.42 --port 6467 --no-voice
-                                   explicit port, microphone disabled
+  openremote key --host 192.168.1.42 power
+                                   send one button press (automation)
+  openremote key --host 192.168.1.42 dpad_down --direction long
+                                   long-press a button
+  openremote text --host 192.168.1.42 "hello world"
+                                   type into the TV's focused field
+  openremote volume --host 192.168.1.42 up
+                                   volume up / down / mute / status
 
 the pairing lives in ~/.config/openremote/ (client.pem + key.pem); copy that
 folder to another PC to reuse it. If `openremote` is not on PATH, use:
-  python -m atv_remote wizard
+  python -m atv_remote
 """
 
 
@@ -315,7 +390,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="openremote",
         description="Standalone Google TV / Android TV remote control "
-                    "(Android TV Remote v2 protocol).",
+                    "(Android TV Remote v2 protocol). Bare `openremote` opens "
+                    "the interactive menu.",
         epilog=EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -371,6 +447,54 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_remote.set_defaults(func=cmd_remote)
 
+    p_key = sub.add_parser(
+        "key",
+        help="send a single button press (automation)",
+        description="Connect to the TV, send one key event and exit. Key names: "
+                    "dpad_up/down/left/right/center, home, back, power, volume_up, "
+                    "volume_down, volume_mute, play_pause, next, previous, menu, "
+                    "search, or KEYCODE_* names, or a raw number.",
+    )
+    common(p_key)
+    p_key.add_argument("key", help="key name, KEYCODE_* name, or raw keycode")
+    p_key.add_argument(
+        "--direction",
+        choices=["short", "long"],
+        default="short",
+        help="short = tap, long = press, hold, release (default: short)",
+    )
+    p_key.add_argument(
+        "--hold", type=float, default=0.6,
+        help="seconds to hold for --direction long (default: 0.6)",
+    )
+    p_key.set_defaults(func=cmd_key)
+
+    p_text = sub.add_parser(
+        "text",
+        help="type text into the TV's focused field (automation)",
+        description="Connect to the TV and type the given text via the IME "
+                    "channel (the TV's on-screen keyboard must be focused).",
+    )
+    common(p_text)
+    p_text.add_argument("text", nargs="+", help="text to type")
+    p_text.set_defaults(func=cmd_text)
+
+    p_volume = sub.add_parser(
+        "volume",
+        help="volume up/down/mute/status (automation)",
+        description="Adjust the TV volume or report the current level.",
+    )
+    common(p_volume)
+    p_volume.add_argument(
+        "action", choices=["up", "down", "mute", "status"],
+        help="what to do",
+    )
+    p_volume.add_argument(
+        "--steps", type=int, default=1,
+        help="how many volume steps for up/down (default: 1)",
+    )
+    p_volume.set_defaults(func=cmd_volume)
+
     p_wizard = sub.add_parser(
         "wizard",
         help="guided first run: discover, pair if needed, then remote",
@@ -396,8 +520,16 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args_list = sys.argv[1:] if argv is None else argv
     if not args_list:
-        _print_guide()
-        return 0
+        # Bare invocation: enter the interactive menu (sticky).
+        try:
+            from .menu import run_menu
+        except ImportError as exc:
+            print(f"The interactive menu needs 'rich' and 'questionary' ({exc}).")
+            print("Install them with:  pip install rich questionary")
+            print("Meanwhile, command mode still works — see the guide below.\n")
+            _print_guide()
+            return 1
+        return run_menu()
     args = build_parser().parse_args(args_list)
     try:
         return asyncio.run(args.func(args))
