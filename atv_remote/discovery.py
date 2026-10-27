@@ -74,26 +74,29 @@ def device_from_service_info(info: ServiceInfo) -> TVDevice | None:
 
 
 class _Collector:
+    """Collects services from the zeroconf browser (callable handler form)."""
+
     def __init__(self) -> None:
         self.devices: dict[str, TVDevice] = {}
-        self._zc: Zeroconf | None = None
 
-    def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        self._update(zc, type_, name)
-
-    def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        self._update(zc, type_, name)
-
-    def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        self.devices.pop(name, None)
-
-    def _update(self, zc: Zeroconf, type_: str, name: str) -> None:
-        info = zc.get_service_info(type_, name, timeout=2000)
-        if info is None:
+    def on_service_state_change(
+        self, zeroconf: Zeroconf, service_type: str, name: str,
+        state_change: Any,
+    ) -> None:
+        if state_change.name not in ("Added", "Updated"):
             return
-        device = device_from_service_info(info)
-        if device:
-            self.devices[name] = device
+        # Resolve asynchronously: the sync get_service_info would block the
+        # event loop (and zeroconf forbids it).
+        asyncio.ensure_future(self._fetch(zeroconf, service_type, name))
+
+    async def _fetch(self, zeroconf: Zeroconf, service_type: str, name: str) -> None:
+        from zeroconf.asyncio import AsyncServiceInfo
+
+        info = AsyncServiceInfo(service_type, name)
+        if await info.async_request(zeroconf, 2000):
+            device = device_from_service_info(info)
+            if device:
+                self.devices[name] = device
 
 
 async def discover(timeout: float = 5.0) -> list[TVDevice]:
@@ -101,7 +104,9 @@ async def discover(timeout: float = 5.0) -> list[TVDevice]:
     collector = _Collector()
     azc = AsyncZeroconf()
     try:
-        browser = AsyncServiceBrowser(azc.zeroconf, [SERVICE_TYPE], handlers=[collector])
+        browser = AsyncServiceBrowser(
+            azc.zeroconf, [SERVICE_TYPE], handlers=[collector.on_service_state_change]
+        )
         await asyncio.sleep(timeout)
         await browser.async_cancel()
     finally:
@@ -139,7 +144,9 @@ def subnet_hosts(local_ip: str | None, prefix: int = 24) -> list[str]:
 
 async def _probe(ip: str, port: int, timeout: float) -> str | None:
     try:
-        writer = await asyncio.wait_for(asyncio.open_connection(ip, port), timeout)
+        _reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(ip, port), timeout
+        )
     except (OSError, asyncio.TimeoutError):
         return None
     writer.close()

@@ -158,7 +158,31 @@ class FakeTV:
             server=f"{instance}.local.",
         )
         self._zeroconf = AsyncZeroconf()
-        await self._zeroconf.async_register_service(self._service_info)
+        try:
+            # strict=False: the real service name "_androidtvremote2" is 16
+            # bytes, which violates the RFC 6763 15-byte recommendation but is
+            # what actual TVs advertise.
+            await self._zeroconf.async_register_service(self._service_info, strict=False)
+        except Exception as exc:  # noqa: BLE001 - discovery has a scan fallback
+            console.print(f"[yellow]mDNS advertisement failed ({exc.__class__.__name__}: "
+                          f"{exc}) - continuing without it; the network scan will "
+                          f"still find this TV.[/yellow]")
+            try:
+                await self._zeroconf.async_close()
+            except OSError:
+                pass
+            self._zeroconf = None
+
+    def ensure_client_cert_loaded(self) -> None:
+        """Lazily read the OpenRemote client certificate (it may be created
+        after this emulator started)."""
+        if self._client_cert_der is None:
+            path = Path(DEFAULT_CERT_PATH).expanduser()
+            if path.exists():
+                self.client_cert_pem = path.read_bytes()
+                self._client_cert_der = x509.load_pem_x509_certificate(
+                    self.client_cert_pem
+                ).public_bytes(Encoding.DER)
 
     # ------------------------------------------------------------- sessions
 
@@ -221,6 +245,7 @@ class _Session:
         elif F_OPTIONS in fields:
             await self._send(encode_options())
         elif F_CONFIGURATION in fields:
+            self.tv.ensure_client_cert_loaded()
             if self.tv._client_cert_der:
                 # A valid PIN: check digits derived from both public keys.
                 self.pin = make_pairing_pin(self.tv._client_cert_der, self.tv._cert_pem)
