@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">OpenRemote</string>
+    <string name="scanning">Searching for TVs…</string>
+    <string name="enter_ip_hint">Enter TV IP (e.g. 192.168.1.50)</string>
+    <string name="connect">Connect</string>
+    <string name="pairing_title">Pair with TV</string>
+    <string name="pairing_hint">A 6-digit PIN appears on your TV. Type it below.</string>
+    <string name="pin_hint">PIN</string>
+    <string name="pair">Pair</string>
+</resources>

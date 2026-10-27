@@ -11,6 +11,14 @@ venv/
 .coverage
 htmlcov/
 
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.apk.idsig
+
 # Secrets / local state
 *.pem
 *.key

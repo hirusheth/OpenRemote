@@ -33,6 +33,36 @@ reverse-engineering the Google Home APK (4.34.22.2) with
   hand-rolled and byte-exact (no protoc/gencode); only discovery, TLS certs
   and audio use libraries.
 
+## Android app
+
+OpenRemote also ships as a standalone Android app (Kotlin, no Google Play
+services, no Google account) with the classic Android TV remote UI — dark
+trackpad with center dot, back/home/assistant buttons, mute + volume pill:
+
+```
+android/            Gradle project (Kotlin)
+  app/src/main/java/com/openremote/app/
+    Wire.kt         protobuf wire codec (port of wire.py)
+    Polo.kt         POLO pairing (port of pairing.py)
+    ClientCert.kt   AndroidKeyStore client certificate
+    RemoteClient.kt TLS session + framing + handshake + voice streaming
+    NsdDiscovery.kt mDNS discovery (_androidtvremote2._tcp.)
+    TrackpadView.kt swipe = D-pad, tap = OK
+    DiscoveryActivity.kt / PairingActivity.kt / RemoteActivity.kt
+```
+
+Build it (requires the Android SDK + JDK 17+):
+
+```bash
+cd android
+gradle assembleDebug        # APK: app/build/outputs/apk/debug/app-debug.apk
+```
+
+Or grab a prebuilt APK from the GitHub releases. The app generates its client
+certificate in the Android KeyStore on first pairing; pairing works exactly
+like on the desktop (PIN shown on the TV). Voice: hold the assistant button
+to stream your microphone to the TV.
+
 ## Test without a TV (fake TV emulator)
 
 OpenRemote ships a barebones Android TV emulator so you can test the whole

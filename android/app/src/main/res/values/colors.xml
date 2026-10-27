@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="background">#0B0D10</color>
+    <color name="surface">#25272B</color>
+    <color name="surface_pressed">#313438</color>
+    <color name="text_primary">#E8EAED</color>
+    <color name="text_secondary">#9AA0A6</color>
+    <color name="dot">#DADCE0</color>
+    <color name="assistant_blue">#4285F4</color>
+    <color name="assistant_red">#EA4335</color>
+    <color name="assistant_yellow">#FBBC05</color>
+    <color name="assistant_green">#34A853</color>
+    <color name="divider">#3A3D41</color>
+</resources>
