@@ -4,7 +4,7 @@ Protocol reverse-engineered from the Google Home app (4.34.22.2) with REA;
 see EVIDENCE.md for the evidence trail.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 from .client import ATVRemoteClient, RemoteConfig, TVState
 from .discovery import TVDevice, discover

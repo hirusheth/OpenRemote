@@ -1,6 +1,6 @@
 [project]
 name = "openremote"
-version = "0.2.0"
+version = "0.2.1"
 description = "Standalone Google TV / Android TV remote control — Android TV Remote v2 protocol, reverse-engineered from the Google Home app"
 readme = "README.md"
 requires-python = ">=3.11"
