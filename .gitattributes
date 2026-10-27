@@ -1,0 +1,5 @@
+* text=auto eol=lf
+*.pem binary
+*.key binary
+*.apk binary
+*.xapk binary

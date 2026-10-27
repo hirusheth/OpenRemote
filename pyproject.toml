@@ -1,0 +1,39 @@
+[project]
+name = "openremote"
+version = "0.1.0"
+description = "Standalone Google TV / Android TV remote control — Android TV Remote v2 protocol, reverse-engineered from the Google Home app"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+keywords = ["google-tv", "android-tv", "remote", "remote-control", "mdns", "protobuf"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Topic :: Home Automation",
+    "Topic :: Multimedia :: Video",
+]
+dependencies = [
+    "zeroconf>=0.131.0",
+    "cryptography>=42.0.0",
+    "sounddevice>=0.4.6",
+    "numpy>=1.26.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[project.scripts]
+openremote = "atv_remote.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["atv_remote*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
