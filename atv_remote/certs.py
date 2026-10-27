@@ -19,6 +19,10 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
+#: Default storage for the client certificate/key pair.
+DEFAULT_CERT_PATH = "~/.config/openremote/client.pem"
+DEFAULT_KEY_PATH = "~/.config/openremote/key.pem"
+
 
 def generate_client_cert(common_name: str = "OpenRemote") -> tuple[bytes, bytes]:
     """Return (cert_pem, key_pem) for a fresh self-signed client certificate."""

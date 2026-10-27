@@ -2,7 +2,7 @@
 
 Runs when `openremote` is started with no arguments. Pick actions with
 arrow keys, number keys or by typing to filter. After each action you return
-to the menu until you quit — no retyping `openremote` between steps.
+to the menu until you quit - no retyping `openremote` between steps.
 
 The command-line interface (`openremote discover|pair|remote|key|text|volume|...`)
 is untouched and remains the automation/scripting surface. When stdin is not a
@@ -24,15 +24,16 @@ from rich.panel import Panel
 from rich.table import Table
 
 from . import __version__
+from .certs import DEFAULT_CERT_PATH, DEFAULT_KEY_PATH
 from .client import ATVRemoteClient, RemoteConfig
-from .discovery import TVDevice, discover
+from .discovery import TVDevice, discover, find_devices
 from .pairing import PairingClient, make_ssl_context
 from .certs import ensure_client_cert
 
 console = Console()
 
-DEFAULT_CERT = "~/.config/openremote/client.pem"
-DEFAULT_KEY = "~/.config/openremote/key.pem"
+CERT_PATH = DEFAULT_CERT_PATH
+KEY_PATH = DEFAULT_KEY_PATH
 LAST_TV_FILE = Path("~/.config/openremote/last_tv.json").expanduser()
 
 
@@ -69,8 +70,8 @@ def _config_for(device: TVDevice, client_name: str = "OpenRemote") -> RemoteConf
         host=device.host,
         port=device.port,
         client_name=client_name,
-        cert_path=DEFAULT_CERT,
-        key_path=DEFAULT_KEY,
+        cert_path=CERT_PATH,
+        key_path=KEY_PATH,
     )
 
 
@@ -80,16 +81,23 @@ def _config_for(device: TVDevice, client_name: str = "OpenRemote") -> RemoteConf
 
 
 async def scan_flow(timeout: float = 5.0) -> list[TVDevice]:
-    with console.status("[cyan]Scanning for TVs on this network...[/cyan]"):
-        devices = await discover(timeout=timeout)
+    with console.status("[cyan]Scanning for TVs on this network (mDNS)...[/cyan]"):
+        devices, method = await find_devices(timeout=timeout)
     if not devices:
         console.print("[red]No TVs found.[/red] Checklist:")
         console.print("  - TV powered on and on the same network (no VPN on this PC)")
         console.print("  - TV: Settings > Apps > Show system apps > "
                       "[italic]Android TV Remote Service[/italic] enabled")
-        console.print("  - allow Python through the firewall (UDP 5353 mDNS)")
+        console.print("  - allow Python through the firewall (UDP 5353 mDNS) or run "
+                      "[bold]openremote fix-firewall[/bold]")
+        console.print("  - or pick [bold]Enter an IP address manually[/bold] below "
+                      "(works with zero firewall config)")
         return []
-    table = Table(title="TVs found", header_style="cyan")
+    if method != "mDNS":
+        console.print("[dim](mDNS was unavailable - used an outbound network scan; "
+                      "run 'openremote fix-firewall' to enable fast named "
+                      "discovery)[/dim]")
+    table = Table(title=f"TVs found ({method})", header_style="cyan")
     table.add_column("#", style="dim", width=3)
     table.add_column("Name")
     table.add_column("Address", style="green")
@@ -104,8 +112,8 @@ async def scan_flow(timeout: float = 5.0) -> list[TVDevice]:
 
 async def pair_flow(device: TVDevice, client_name: str = "OpenRemote") -> bool:
     """Run POLO pairing for one TV; returns True when paired."""
-    cert_path, key_path = ensure_client_cert(Path(DEFAULT_CERT).expanduser(),
-                                             Path(DEFAULT_KEY).expanduser())
+    cert_path, key_path = ensure_client_cert(Path(CERT_PATH).expanduser(),
+                                             Path(KEY_PATH).expanduser())
     config = _config_for(device, client_name)
     console.print(f"Connecting to [green]{device.host}:{device.port}[/green] ...")
     try:
@@ -117,7 +125,7 @@ async def pair_flow(device: TVDevice, client_name: str = "OpenRemote") -> bool:
         return False
     pairing = PairingClient(reader, writer, client_name, cert_path.read_bytes())
     try:
-        console.print("Starting pairing — a [bold cyan]6-digit PIN[/bold cyan] "
+        console.print("Starting pairing - a [bold cyan]6-digit PIN[/bold cyan] "
                       "should now appear on the TV...")
         await pairing.start()
         pin = await asyncio.get_event_loop().run_in_executor(
@@ -128,7 +136,7 @@ async def pair_flow(device: TVDevice, client_name: str = "OpenRemote") -> bool:
         await pairing.finish(pin.strip())
     except (ValueError, RuntimeError, OSError) as exc:
         console.print(f"[red]Pairing failed:[/red] {exc}")
-        console.print("[dim]The PIN may have been mistyped or expired — try again.[/dim]")
+        console.print("[dim]The PIN may have been mistyped or expired - try again.[/dim]")
         return False
     finally:
         writer.close()
@@ -149,7 +157,16 @@ async def connect_flow(device: TVDevice, no_voice: bool = False) -> ATVRemoteCli
         try:
             with console.status("[cyan]Connecting...[/cyan]"):
                 await asyncio.wait_for(client.connect(), timeout=10.0)
-            if device.name:
+            # Remember the TV under its real name once we know it.
+            info = client.state.device_info
+            if info and (info.model or info.vendor):
+                named = TVDevice(
+                    name=" ".join(part for part in (info.vendor, info.model) if part),
+                    host=device.host,
+                    port=device.port,
+                )
+                save_last_tv(named)
+            elif device.name:
                 save_last_tv(device)
             return client
         except Exception as exc:  # noqa: BLE001 - offer pairing on any failure
@@ -157,7 +174,7 @@ async def connect_flow(device: TVDevice, no_voice: bool = False) -> ATVRemoteCli
             if attempt == 1:
                 raise
             console.print(f"[yellow]The TV rejected the session "
-                          f"({exc.__class__.__name__}) — it is probably not paired "
+                          f"({exc.__class__.__name__}) - it is probably not paired "
                           f"with this PC yet.[/yellow]")
             if not await pair_flow(device, config.client_name):
                 raise ConnectionError("pairing was not completed") from exc
@@ -248,14 +265,37 @@ async def volume_flow(device: TVDevice, action: str, steps: int = 1) -> None:
 # ---------------------------------------------------------------------------
 
 
+def choose_manual_ip() -> TVDevice | None:
+    raw = questionary.text(
+        "TV address (e.g. 192.168.1.50 or 192.168.1.50:6466):"
+    ).ask()
+    if not raw:
+        return None
+    from .discovery import parse_host_port
+
+    try:
+        host, port = parse_host_port(raw.strip())
+        return TVDevice(name=f"TV at {host}", host=host, port=port)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return None
+
+
 def choose_device(devices: list[TVDevice]) -> TVDevice | None:
     choices = [
         questionary.Choice(
-            title=f"{d.name or '(unnamed TV)'}  —  {d.host}:{d.port}", value=d
+            title=f"{d.name or '(unnamed TV)'}  -  {d.host}:{d.port}", value=d
         )
         for d in devices
     ]
-    return questionary.select("Which TV?", choices=choices).ask()
+    choices.append(questionary.Separator())
+    choices.append(
+        questionary.Choice(title="Enter an IP address manually...", value="manual")
+    )
+    picked = questionary.select("Which TV?", choices=choices).ask()
+    if picked == "manual":
+        return choose_manual_ip()
+    return picked
 
 
 def choose_action(last: TVDevice | None) -> str | None:
@@ -272,13 +312,14 @@ def choose_action(last: TVDevice | None) -> str | None:
         questionary.Choice(title="Scan for TVs", value="scan"),
         questionary.Choice(title="Pair a new TV (PIN)", value="pair"),
         questionary.Choice(title="Remote control", value="remote"),
-        questionary.Choice(title=" Send a single key", value="key"),
+        questionary.Choice(title="Send a single key", value="key"),
+        questionary.Choice(title="Fix firewall (allow mDNS)", value="fix_firewall"),
         questionary.Choice(title="Help / command reference", value="help"),
         questionary.Separator(),
         questionary.Choice(title="Quit", value="quit"),
     ]
     return questionary.select(
-        f"OpenRemote {__version__} — what do you want to do?",
+        f"OpenRemote {__version__} - what do you want to do?",
         choices=choices,
     ).ask()
 
@@ -294,12 +335,12 @@ def _select_device_or_scan(preselected: TVDevice | None) -> TVDevice | None:
 
 
 HELP_TEXT = f"""\
-[bold cyan]OpenRemote {__version__}[/bold cyan] — Android TV Remote v2, standalone.
+[bold cyan]OpenRemote {__version__}[/bold cyan] - Android TV Remote v2, standalone.
 
-[bold]This menu[/bold]: pick with ↑/↓ or a number, Enter confirms. After each
+[bold]This menu[/bold]: pick with the arrow keys or a number, Enter confirms. After each
 action you come back here. `q`/Esc/Ctrl+C cancels or quits.
 
-[bold]Inside the remote[/bold] (option 🎮):
+[bold]Inside the remote[/bold] (option Remote control):
   arrows = D-pad | Enter/Space = OK | Backspace = back | h = home
   +/- = volume | m = mute | p = power | t = type text | v = voice
   n/b = next/prev | k/j = seek | s = settings | g = guide | q = back here
@@ -313,6 +354,10 @@ action you come back here. `q`/Esc/Ctrl+C cancels or quits.
   openremote text --host <ip> "hello world"
   openremote volume --host <ip> up|down|mute|status
   openremote wizard                               (guided, non-interactive menu)
+  openremote fix-firewall                         (allow mDNS, one UAC click)
+
+[bold]Discovery[/bold]: mDNS first; if blocked, an outbound network scan finds
+the TV anyway (no firewall config needed). Manual IP entry works everywhere.
 
 [bold]Pairing state[/bold] lives in ~/.config/openremote/ (client.pem/key.pem
 plus last_tv.json). Copy that folder to reuse it on another PC.
@@ -332,9 +377,9 @@ def _show_help() -> None:
 def run_menu() -> int:
     """The interactive home screen. Returns a process exit code."""
     if not sys.stdin.isatty():
-        # Scripted/piped `openremote` — do not enter interactive mode.
+        # Scripted/piped `openremote` - do not enter interactive mode.
         console.print(
-            "[yellow]stdin is not a terminal — use subcommands for "
+            "[yellow]stdin is not a terminal - use subcommands for "
             "automation:[/yellow] openremote discover|pair|remote|key|text|volume|wizard\n"
             "Run `openremote --help` for everything."
         )
@@ -364,7 +409,7 @@ def run_menu() -> int:
                         save_last_tv(chosen)
             elif action == "connect_last":
                 if last is None:
-                    console.print("[red]No TV remembered yet — scan first.[/red]")
+                    console.print("[red]No TV remembered yet - scan first.[/red]")
                     continue
                 asyncio.run(remote_flow(last))
             elif action == "pair":
@@ -379,6 +424,21 @@ def run_menu() -> int:
                     continue
                 last = device
                 asyncio.run(remote_flow(device))
+            elif action == "fix_firewall":
+                from . import firewall
+
+                if firewall.rule_exists():
+                    console.print("[green]mDNS is already allowed through "
+                                  "the firewall.[/green]")
+                    continue
+                console.print("A [bold]UAC prompt[/bold] will appear - click "
+                              "[bold]Yes[/bold] to add the rule (UDP 5353 only).")
+                ok, message = firewall.create_rule_elevated()
+                if ok:
+                    console.print(f"[green]{message}.[/green] Fast discovery enabled.")
+                else:
+                    console.print(f"[red]{message}.[/red] Discovery still works via "
+                                  "the automatic network scan.")
             elif action == "key":
                 device = _select_device_or_scan(last)
                 if device is None:
@@ -395,7 +455,7 @@ def run_menu() -> int:
             else:  # pragma: no cover - unknown choice
                 continue
         except KeyboardInterrupt:
-            console.print("\n[yellow]Cancelled — back to the menu.[/yellow]")
+            console.print("\n[yellow]Cancelled - back to the menu.[/yellow]")
         except Exception as exc:  # noqa: BLE001 - menu survives any action failure
             console.print(f"[red]Error:[/red] {exc.__class__.__name__}: {exc}")
             console.print("[dim]Back to the menu.[/dim]")

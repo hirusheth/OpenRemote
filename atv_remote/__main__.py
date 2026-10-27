@@ -1,4 +1,4 @@
-"""OpenRemote — standalone Google TV / Android TV remote control.
+"""OpenRemote - standalone Google TV / Android TV remote control.
 
 Bare `openremote` opens the interactive menu (sticky: pick actions with
 numbers/arrow keys, return to the menu after each action). All commands
@@ -22,7 +22,7 @@ import sys
 
 from . import __version__
 from .client import ATVRemoteClient, RemoteConfig
-from .discovery import TVDevice, discover
+from .discovery import TVDevice, find_devices
 from .pairing import PairingClient, make_ssl_context
 from .certs import ensure_client_cert
 
@@ -32,9 +32,9 @@ DEFAULT_CERT = "~/.config/openremote/client.pem"
 DEFAULT_KEY = "~/.config/openremote/key.pem"
 
 GUIDE = f"""\
-OpenRemote {__version__} — standalone Google TV / Android TV remote control
+OpenRemote {__version__} - standalone Google TV / Android TV remote control
 Speaks the Android TV Remote v2 protocol (reverse-engineered from the Google
-Home app — see EVIDENCE.md).
+Home app - see EVIDENCE.md).
 
 Run `openremote` with no arguments for the interactive menu (pick actions
 with numbers/arrow keys; you stay inside the app until you quit).
@@ -95,25 +95,29 @@ async def cmd_discover(args: argparse.Namespace) -> int:
     from rich.table import Table
 
     console = Console()
-    with console.status("[cyan]Scanning for TVs on this network...[/cyan]"):
-        devices = await discover(timeout=args.timeout)
+    with console.status("[cyan]Scanning for TVs (mDNS)...[/cyan]"):
+        devices, method = await find_devices(timeout=args.timeout)
     if not devices:
         console.print("[red]No TVs found.[/red] Checklist:")
         console.print("  - TV powered on and on the same network (no VPN on this PC)")
         console.print("  - TV: Settings > Apps > Show system apps > "
                       "[italic]Android TV Remote Service[/italic] enabled")
-        console.print("  - allow Python through the firewall (UDP 5353 mDNS)")
+        console.print("  - run [bold]openremote fix-firewall[/bold] to allow mDNS "
+                      "(one UAC click)")
+        console.print("  - or connect by IP directly: "
+                      "[bold]openremote pair --host <tv-ip>[/bold]")
         console.print("\nGuided flow: [bold]openremote wizard[/bold]  |  "
                       "interactive menu: [bold]openremote[/bold]")
         return 1
-    table = Table(title="TVs found", header_style="cyan")
+    if method != "mDNS":
+        console.print("[dim](mDNS unavailable - used the outbound network scan; "
+                      "run 'openremote fix-firewall' for fast named discovery)[/dim]")
+    table = Table(title=f"TVs found ({method})", header_style="cyan")
     table.add_column("#", style="dim", width=3)
     table.add_column("Name")
     table.add_column("Address", style="green")
-    table.add_column("Standby", style="dim")
     for index, device in enumerate(sorted(devices, key=lambda d: d.name), start=1):
-        standby = "?" if device.standby is None else str(device.standby)
-        table.add_row(str(index), device.name, f"{device.host}:{device.port}", standby)
+        table.add_row(str(index), device.name, f"{device.host}:{device.port}")
     console.print(table)
     first = sorted(devices, key=lambda d: d.name)[0]
     console.print("\nNext steps:")
@@ -122,9 +126,27 @@ async def cmd_discover(args: argparse.Namespace) -> int:
     return 0
 
 
-# ---------------------------------------------------------------------------
-# pair
-# ---------------------------------------------------------------------------
+async def cmd_fix_firewall(args: argparse.Namespace) -> int:
+    from rich.console import Console
+
+    from . import firewall
+
+    console = Console()
+    console.print("Checking for the mDNS firewall rule (inbound UDP 5353)...")
+    if firewall.rule_exists():
+        console.print("[green]Already in place - mDNS discovery is allowed.[/green]")
+        return 0
+    console.print("A [bold]UAC prompt[/bold] will appear - click [bold]Yes[/bold] "
+                  "to add the rule (scoped to UDP port 5353 only).")
+    ok, message = await asyncio.to_thread(firewall.create_rule_elevated)
+    if ok:
+        console.print(f"[green]{message}.[/green] Fast mDNS discovery now works.")
+        return 0
+    console.print(f"[red]{message}.[/red]")
+    console.print("[dim]Discovery still works without it: the app automatically "
+                  "falls back to an outbound network scan, and you can always "
+                  "connect by IP.[/dim]")
+    return 0
 
 
 async def cmd_pair(args: argparse.Namespace) -> int:
@@ -142,7 +164,7 @@ async def cmd_pair(args: argparse.Namespace) -> int:
     console.print(f"Connecting to [green]{config.host}:{config.port}[/green] ...")
     reader, writer = await asyncio.open_connection(config.host, config.port, ssl=ctx)
     pairing = PairingClient(reader, writer, config.client_name, cert_path.read_bytes())
-    console.print("Starting pairing — a [bold cyan]6-digit PIN[/bold cyan] should "
+    console.print("Starting pairing - a [bold cyan]6-digit PIN[/bold cyan] should "
                   "now appear on the TV...")
     await pairing.start()
     pin = input("Enter the PIN shown on the TV: ").strip()
@@ -150,7 +172,7 @@ async def cmd_pair(args: argparse.Namespace) -> int:
         await pairing.finish(pin)
     except ValueError as exc:
         console.print(f"[red]Pairing failed:[/red] {exc}")
-        console.print("[dim]The PIN may have been mistyped or expired — try again.[/dim]")
+        console.print("[dim]The PIN may have been mistyped or expired - try again.[/dim]")
         return 1
     writer.close()
     try:
@@ -267,7 +289,7 @@ async def _pick_device(devices: list[TVDevice]) -> TVDevice:
 
 async def _pair_interactive(config: RemoteConfig, reason: str) -> bool:
     print(reason)
-    print("Starting pairing — a 6-digit PIN should appear on the TV...")
+    print("Starting pairing - a 6-digit PIN should appear on the TV...")
     cert_path, key_path = ensure_client_cert(
         pathlib.Path(config.cert_path).expanduser(),
         pathlib.Path(config.key_path).expanduser(),
@@ -293,9 +315,9 @@ async def _pair_interactive(config: RemoteConfig, reason: str) -> bool:
 
 
 async def cmd_wizard(args: argparse.Namespace) -> int:
-    print("OpenRemote wizard — let's find and connect to your TV.\n")
-    print(f"Searching for TVs ({args.timeout}s)...")
-    devices = await discover(timeout=args.timeout)
+    print("OpenRemote wizard - let's find and connect to your TV.\n")
+    print(f"Searching for TVs ({args.timeout}s, mDNS + network scan)...")
+    devices, method = await find_devices(timeout=args.timeout)
     if not devices:
         print("No TVs found. Checklist:")
         print("  - TV powered on and on this network")
@@ -304,6 +326,9 @@ async def cmd_wizard(args: argparse.Namespace) -> int:
         print(f"\nDocs: {DOCS_URL}")
         return 1
 
+    if method != "mDNS":
+        print("(mDNS unavailable - used the outbound network scan; "
+              "run 'openremote fix-firewall' for fast named discovery)")
     device = await _pick_device(devices)
     config = RemoteConfig(
         host=device.host,
@@ -495,6 +520,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_volume.set_defaults(func=cmd_volume)
 
+    p_fix = sub.add_parser(
+        "fix-firewall",
+        help="allow mDNS discovery through the Windows firewall (one UAC click)",
+        description="Add a narrowly scoped inbound firewall rule (UDP 5353) so "
+                    "TV discovery via mDNS works. Only affects discovery; "
+                    "controlling a TV by IP never needs this.",
+    )
+    p_fix.set_defaults(func=cmd_fix_firewall)
+
     p_wizard = sub.add_parser(
         "wizard",
         help="guided first run: discover, pair if needed, then remote",
@@ -526,7 +560,7 @@ def main(argv: list[str] | None = None) -> int:
         except ImportError as exc:
             print(f"The interactive menu needs 'rich' and 'questionary' ({exc}).")
             print("Install them with:  pip install rich questionary")
-            print("Meanwhile, command mode still works — see the guide below.\n")
+            print("Meanwhile, command mode still works - see the guide below.\n")
             _print_guide()
             return 1
         return run_menu()
