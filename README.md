@@ -1,5 +1,7 @@
 # OpenRemote
 
+[![Featured on Made with REA](https://madewithrea.com/badges/featured.svg)](https://madewithrea.com/builds/openremote-android-tv-remote-v2-protocol-recovered-from-google-home-ap)
+
 A **standalone remote control for Google TV / Android TV** — no Google Home, no
 phone app, no cloud. It speaks the same *Android TV Remote v2* protocol that
 the Google Home app uses for its built-in virtual remote, reconstructed by
